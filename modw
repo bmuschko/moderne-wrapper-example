@@ -1,0 +1,150 @@
+#!/bin/bash
+#
+# Moderne CLI Wrapper for Linux and macOS
+# Downloads and caches the Moderne CLI distribution, then executes it.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROPERTIES_FILE="$SCRIPT_DIR/moderne/wrapper/moderne-wrapper.properties"
+CLI_HOME="${MODERNE_CLI_HOME:-$HOME/.moderne/cli}"
+DIST_DIR="$CLI_HOME/dist"
+
+# ---------------------------------------------------------------------------
+# Read a property value from moderne-wrapper.properties
+# ---------------------------------------------------------------------------
+read_property() {
+    local key="$1"
+    local default="${2:-}"
+    local value
+    value=$(grep "^${key}=" "$PROPERTIES_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-)
+    echo "${value:-$default}"
+}
+
+# ---------------------------------------------------------------------------
+# Detect the platform artifact name
+# ---------------------------------------------------------------------------
+detect_platform() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "osx" ;;
+        *)
+            echo "Error: Unsupported operating system: $os" >&2
+            echo "Use modw.cmd on Windows." >&2
+            exit 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Resolve RELEASE to an actual version via maven-metadata.xml
+# ---------------------------------------------------------------------------
+resolve_version() {
+    local version="$1"
+    local base_url="$2"
+    local platform="$3"
+
+    if [[ "$version" == "RELEASE" ]]; then
+        local metadata_url="${base_url}/moderne-cli-${platform}/maven-metadata.xml"
+        local metadata
+        metadata=$(curl --silent --fail --show-error "$metadata_url") || {
+            echo "Error: Failed to fetch version metadata from $metadata_url" >&2
+            exit 1
+        }
+        version=$(echo "$metadata" | grep '<release>' | sed 's/.*<release>\(.*\)<\/release>.*/\1/')
+        if [[ -z "$version" ]]; then
+            echo "Error: Could not resolve RELEASE version from metadata" >&2
+            exit 1
+        fi
+    fi
+    echo "$version"
+}
+
+# ---------------------------------------------------------------------------
+# Download the CLI distribution if not already cached
+# ---------------------------------------------------------------------------
+download_distribution() {
+    local base_url="$1"
+    local platform="$2"
+    local version="$3"
+    local artifact="moderne-cli-${platform}"
+    local filename="${artifact}-${version}.sh"
+    local cached="$DIST_DIR/$filename"
+
+    if [[ -f "$cached" ]]; then
+        echo "$cached"
+        return 0
+    fi
+
+    local download_url="${base_url}/${artifact}/${version}/${filename}"
+    local sha256_url="${download_url}.sha256"
+
+    mkdir -p "$DIST_DIR"
+
+    echo "Downloading Moderne CLI ${version} for ${platform}..." >&2
+    echo "  $download_url" >&2
+
+    local tmp_file="$DIST_DIR/${filename}.tmp"
+    curl --silent --fail --show-error --location --output "$tmp_file" "$download_url" || {
+        rm -f "$tmp_file"
+        echo "Error: Failed to download CLI from $download_url" >&2
+        exit 1
+    }
+
+    # Verify SHA-256 checksum
+    local expected_sha256
+    expected_sha256=$(curl --silent --fail "$sha256_url" 2>/dev/null | awk '{print $1}') || true
+    if [[ -n "$expected_sha256" ]]; then
+        local actual_sha256
+        if command -v sha256sum &>/dev/null; then
+            actual_sha256=$(sha256sum "$tmp_file" | awk '{print $1}')
+        else
+            actual_sha256=$(shasum -a 256 "$tmp_file" | awk '{print $1}')
+        fi
+        if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+            rm -f "$tmp_file"
+            echo "Error: SHA-256 checksum mismatch" >&2
+            echo "  Expected: $expected_sha256" >&2
+            echo "  Actual:   $actual_sha256" >&2
+            exit 1
+        fi
+        echo "  Checksum verified." >&2
+    fi
+
+    mv "$tmp_file" "$cached"
+    chmod +x "$cached"
+
+    echo "$cached"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+    if [[ ! -f "$PROPERTIES_FILE" ]]; then
+        echo "Error: Cannot find $PROPERTIES_FILE" >&2
+        exit 1
+    fi
+
+    local version
+    version=$(read_property "version" "RELEASE")
+    version="${MODERNE_WRAPPER_VERSION:-$version}"
+
+    local base_url
+    base_url=$(read_property "distributionUrl" "https://repo1.maven.org/maven2/io/moderne")
+    base_url="${MODERNE_WRAPPER_DISTRIBUTION_URL:-$base_url}"
+
+    local platform
+    platform=$(detect_platform)
+
+    version=$(resolve_version "$version" "$base_url" "$platform")
+
+    local cli_path
+    cli_path=$(download_distribution "$base_url" "$platform" "$version")
+
+    exec "$cli_path" "$@"
+}
+
+main "$@"
