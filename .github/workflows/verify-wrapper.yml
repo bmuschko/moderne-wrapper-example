@@ -29,7 +29,7 @@ jobs:
         shell: cmd
         run: |
           modw.cmd
-          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
+          for /f "delims=" %%d in ('dir /s /b "%USERPROFILE%\.moderne\cli\dist\*mod.exe" 2^>nul') do echo %%~dpd>> "%GITHUB_PATH%"
 
       - name: Configure CLI (Linux/macOS)
         if: runner.os != 'Windows'
@@ -41,4 +41,4 @@ jobs:
         run: configure-mod.cmd init
 
       - name: Verify mod is on PATH
-        run: mod version
+        run: mod --version
