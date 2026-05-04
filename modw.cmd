@@ -47,7 +47,7 @@ if "%VERSION%"=="RELEASE" (
         exit /b 1
     )
 
-    for /f "tokens=2 delims=<>" %%v in ('findstr /r "<release>" "!METADATA_FILE!"') do (
+    for /f "tokens=3 delims=<>" %%v in ('findstr /r "<release>" "!METADATA_FILE!"') do (
         set "VERSION=%%v"
     )
     del "!METADATA_FILE!" 2>nul

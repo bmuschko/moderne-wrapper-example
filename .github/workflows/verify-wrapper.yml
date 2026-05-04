@@ -20,12 +20,16 @@ jobs:
 
       - name: Install wrapper (Linux/macOS)
         if: runner.os != 'Windows'
-        run: ./modw
+        run: |
+          ./modw
+          echo "$HOME/.moderne/cli/bin" >> "$GITHUB_PATH"
 
       - name: Install wrapper (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        run: modw.cmd
+        run: |
+          modw.cmd
+          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
 
       - name: Configure CLI (Linux/macOS)
         if: runner.os != 'Windows'
