@@ -28,7 +28,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          modw.cmd
+          call modw.cmd
           echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
 
       - name: Verify mod is on PATH
@@ -41,4 +41,4 @@ jobs:
       - name: Configure CLI (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        run: configure-mod.cmd init
+        run: call configure-mod.cmd init
