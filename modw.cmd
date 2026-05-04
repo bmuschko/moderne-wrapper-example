@@ -67,7 +67,11 @@ set "CACHED=%DIST_DIR%\%FILENAME%"
 set "EXTRACT_DIR=%DIST_DIR%\%ARTIFACT%-%VERSION%"
 
 set "BIN_DIR=%CLI_HOME%\bin"
-if not exist "%BIN_DIR%\mod.exe" (
+set "SKIP_DOWNLOAD="
+for %%e in (exe bat cmd) do (
+    if exist "%BIN_DIR%\mod.%%e" set "SKIP_DOWNLOAD=1"
+)
+if not defined SKIP_DOWNLOAD (
     set "DOWNLOAD_URL=%BASE_URL%/%ARTIFACT%/%VERSION%/%FILENAME%"
 
     if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
@@ -104,7 +108,9 @@ if not exist "%BIN_DIR%\mod.exe" (
     )
 
     rem Extract ZIP — if another process finished first, discard our copy
-    if exist "%BIN_DIR%\mod.exe" (
+    set "RACE_DONE="
+    for %%e in (exe bat cmd) do ( if exist "%BIN_DIR%\mod.%%e" set "RACE_DONE=1" )
+    if defined RACE_DONE (
         del "!TMP_FILE!" 2>nul
     ) else (
         echo   Extracting... >&2
@@ -118,26 +124,35 @@ if not exist "%BIN_DIR%\mod.exe" (
 )
 
 rem ---------------------------------------------------------------------------
-rem Locate mod.exe and make it available on PATH
+rem Locate mod executable and make it available on PATH
 rem ---------------------------------------------------------------------------
-set "MOD_EXE="
-if exist "%EXTRACT_DIR%\bin\mod.exe" (
-    set "MOD_EXE=%EXTRACT_DIR%\bin\mod.exe"
-) else (
-    for /r "%EXTRACT_DIR%" %%f in (mod.exe) do (
-        if not defined MOD_EXE set "MOD_EXE=%%f"
+set "MOD_BIN="
+for %%e in (exe bat cmd) do (
+    if not defined MOD_BIN (
+        if exist "%EXTRACT_DIR%\bin\mod.%%e" set "MOD_BIN=%EXTRACT_DIR%\bin\mod.%%e"
+    )
+)
+if not defined MOD_BIN (
+    for %%e in (exe bat cmd) do (
+        if not defined MOD_BIN (
+            for /r "%EXTRACT_DIR%" %%f in (mod.%%e) do (
+                if not defined MOD_BIN set "MOD_BIN=%%f"
+            )
+        )
     )
 )
 
-if not defined MOD_EXE (
-    echo Error: Could not find mod.exe in %EXTRACT_DIR% >&2
+if not defined MOD_BIN (
+    echo Error: Could not find mod executable in %EXTRACT_DIR% >&2
     exit /b 1
 )
 
-rem Copy mod.exe to a stable bin directory for PATH
+rem Copy to a stable bin directory for PATH
 set "BIN_DIR=%CLI_HOME%\bin"
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
-if not exist "%BIN_DIR%\mod.exe" copy "!MOD_EXE!" "%BIN_DIR%\mod.exe" >nul
+for %%f in ("!MOD_BIN!") do set "MOD_EXT=%%~xf"
+for %%f in ("!MOD_BIN!") do set "MOD_NAME=%%~nxf"
+if not exist "%BIN_DIR%\!MOD_NAME!" copy "!MOD_BIN!" "%BIN_DIR%\!MOD_NAME!" >nul
 
 rem Execute only if arguments were provided
 if "%~1"=="" (
@@ -145,5 +160,5 @@ if "%~1"=="" (
     exit /b 0
 )
 
-"%BIN_DIR%\mod.exe" %*
+"%BIN_DIR%\!MOD_NAME!" %*
 exit /b %ERRORLEVEL%
