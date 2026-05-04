@@ -123,6 +123,14 @@ if exist "%EXTRACT_DIR%\install.cmd" (
     call "%EXTRACT_DIR%\install.cmd"
 )
 
+rem ---------------------------------------------------------------------------
+rem Create mod.cmd shim if the installer only created modw.cmd
+rem ---------------------------------------------------------------------------
+set "BIN_DIR=%CLI_HOME%\bin"
+if exist "%BIN_DIR%\modw.cmd" if not exist "%BIN_DIR%\mod.cmd" (
+    echo @"%BIN_DIR%\modw.cmd" %%*> "%BIN_DIR%\mod.cmd"
+)
+
 rem Execute only if arguments were provided
 if "%~1"=="" exit /b 0
 
