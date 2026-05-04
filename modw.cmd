@@ -42,15 +42,15 @@ if "%VERSION%"=="RELEASE" (
     set "METADATA_FILE=%DIST_DIR%\maven-metadata.xml"
     if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 
-    curl --silent --fail --show-error --output "%METADATA_FILE%" "!METADATA_URL!" || (
+    curl --silent --fail --show-error --output "!METADATA_FILE!" "!METADATA_URL!" || (
         echo Error: Failed to fetch version metadata from !METADATA_URL! >&2
         exit /b 1
     )
 
-    for /f "tokens=2 delims=<>" %%v in ('findstr /r "<release>" "%METADATA_FILE%"') do (
+    for /f "tokens=2 delims=<>" %%v in ('findstr /r "<release>" "!METADATA_FILE!"') do (
         set "VERSION=%%v"
     )
-    del "%METADATA_FILE%" 2>nul
+    del "!METADATA_FILE!" 2>nul
 
     if "!VERSION!"=="RELEASE" (
         echo Error: Could not resolve RELEASE version from metadata >&2
