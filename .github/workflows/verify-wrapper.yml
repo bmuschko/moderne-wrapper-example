@@ -19,14 +19,12 @@ jobs:
 
       - name: Install wrapper (Linux/macOS)
         if: runner.os != 'Windows'
-        run: |
-          chmod +x modw configure-mod.sh
-          ./modw --version
+        run: ./modw
 
       - name: Install wrapper (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        run: modw.cmd --version
+        run: modw.cmd
 
       - name: Configure CLI (Linux/macOS)
         if: runner.os != 'Windows'
