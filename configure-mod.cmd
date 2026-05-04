@@ -26,13 +26,13 @@ rem ---------------------------------------------------------------------------
 echo Configuring Moderne CLI environment... >&2
 
 echo Setting Moderne tenant to %MODERNE_TENANT%... >&2
-mod config moderne edit "%MODERNE_TENANT%" --api="%MODERNE_TENANT%" || goto :init_fail
+call mod config moderne edit "%MODERNE_TENANT%" --api="%MODERNE_TENANT%" || goto :init_fail
 rem echo Syncing license from Moderne platform... >&2
-rem mod config license moderne sync || goto :init_fail
+rem call mod config license moderne sync || goto :init_fail
 echo Configuring recipe artifacts from %ARTIFACTORY_MAVEN_URL%... >&2
-mod config recipes artifacts artifactory edit "%ARTIFACTORY_MAVEN_URL%" || goto :init_fail
+call mod config recipes artifacts artifactory edit "%ARTIFACTORY_MAVEN_URL%" || goto :init_fail
 echo Disallowing Maven Central for artifact resolution... >&2
-mod config features no-maven-central || goto :init_fail
+call mod config features no-maven-central || goto :init_fail
 echo CLI environment configured successfully. >&2
 exit /b 0
 
@@ -44,5 +44,5 @@ rem ---------------------------------------------------------------------------
 rem Run CLI command
 rem ---------------------------------------------------------------------------
 :run
-mod %*
+call mod %*
 exit /b %ERRORLEVEL%
