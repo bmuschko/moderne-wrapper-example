@@ -33,12 +33,10 @@ jobs:
 
       - name: Configure CLI (Linux/macOS)
         if: runner.os != 'Windows'
-        continue-on-error: true
         run: ./configure-mod.sh init
 
       - name: Configure CLI (Windows)
         if: runner.os == 'Windows'
-        continue-on-error: true
         shell: cmd
         run: configure-mod.cmd init
 
