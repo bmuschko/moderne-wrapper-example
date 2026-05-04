@@ -74,7 +74,7 @@ if not exist "%EXTRACT_DIR%\bin\mod.exe" (
     echo Downloading Moderne CLI %VERSION% for Windows... >&2
     echo   !DOWNLOAD_URL! >&2
 
-    set "TMP_FILE=%CACHED%.tmp.%RANDOM%"
+    set "TMP_FILE=%DIST_DIR%\%ARTIFACT%-%VERSION%.tmp.%RANDOM%.zip"
     curl --silent --fail --show-error --location --output "!TMP_FILE!" "!DOWNLOAD_URL!" || (
         del "!TMP_FILE!" 2>nul
         echo Error: Failed to download CLI from !DOWNLOAD_URL! >&2
