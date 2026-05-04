@@ -29,7 +29,7 @@ jobs:
         shell: cmd
         run: |
           modw.cmd
-          for /f "delims=" %%d in ('dir /s /b "%USERPROFILE%\.moderne\cli\dist\*mod.exe" 2^>nul') do echo %%~dpd>> "%GITHUB_PATH%"
+          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
 
       - name: Verify mod is on PATH
         run: mod --version
