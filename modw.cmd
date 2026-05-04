@@ -117,14 +117,16 @@ if not exist "%EXTRACT_DIR%\install.cmd" (
 )
 
 rem ---------------------------------------------------------------------------
-rem Run install.cmd from the extracted distribution
+rem Create mod.cmd shim in bin directory so "mod" is available on PATH
 rem ---------------------------------------------------------------------------
-if exist "%EXTRACT_DIR%\install.cmd" (
-    call "%EXTRACT_DIR%\install.cmd"
+set "BIN_DIR=%CLI_HOME%\bin"
+if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
+if not exist "%BIN_DIR%\mod.cmd" (
+    echo @"%EXTRACT_DIR%\modw.cmd" %%*> "%BIN_DIR%\mod.cmd"
 )
 
 rem Execute only if arguments were provided
 if "%~1"=="" exit /b 0
 
-mod %*
+call "%BIN_DIR%\mod.cmd" %*
 exit /b %ERRORLEVEL%
