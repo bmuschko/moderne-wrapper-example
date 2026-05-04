@@ -13,6 +13,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOD="$SCRIPT_DIR/modw"
 MODERNE_TENANT="https://moderne.mycompany.com"
+ARTIFACTORY_MAVEN_URL="https://artifactory.mycompany.com/maven"
 
 # ---------------------------------------------------------------------------
 # Initialization — runs once to configure the CLI environment
@@ -26,11 +27,11 @@ init() {
     echo "Syncing license from Moderne platform..." >&2
     "$MOD" config license moderne sync
 
+    echo "Configuring recipe artifacts from $ARTIFACTORY_MAVEN_URL..." >&2
+    "$MOD" config recipes artifacts artifactory edit "$ARTIFACTORY_MAVEN_URL"
+
     echo "Disallowing Maven Central for artifact resolution..." >&2
     "$MOD" config features no-maven-central
-
-    echo "Installing corporate CA certificate into Java trust store..." >&2
-    "$MOD" config http trust-store edit file --path "$SCRIPT_DIR/certs/corporate-ca.pem"
 
     echo -e "${GREEN}CLI environment configured successfully.${NC}" >&2
 }
