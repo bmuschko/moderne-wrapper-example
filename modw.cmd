@@ -66,12 +66,7 @@ set "FILENAME=%ARTIFACT%-%VERSION%.zip"
 set "CACHED=%DIST_DIR%\%FILENAME%"
 set "EXTRACT_DIR=%DIST_DIR%\%ARTIFACT%-%VERSION%"
 
-set "BIN_DIR=%CLI_HOME%\bin"
-set "SKIP_DOWNLOAD="
-for %%e in (exe bat cmd) do (
-    if exist "%BIN_DIR%\mod.%%e" set "SKIP_DOWNLOAD=1"
-)
-if not defined SKIP_DOWNLOAD (
+if not exist "%EXTRACT_DIR%\install.cmd" (
     set "DOWNLOAD_URL=%BASE_URL%/%ARTIFACT%/%VERSION%/%FILENAME%"
 
     if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
@@ -108,9 +103,7 @@ if not defined SKIP_DOWNLOAD (
     )
 
     rem Extract ZIP — if another process finished first, discard our copy
-    set "RACE_DONE="
-    for %%e in (exe bat cmd) do ( if exist "%BIN_DIR%\mod.%%e" set "RACE_DONE=1" )
-    if defined RACE_DONE (
+    if exist "%EXTRACT_DIR%\install.cmd" (
         del "!TMP_FILE!" 2>nul
     ) else (
         echo   Extracting... >&2
@@ -124,41 +117,14 @@ if not defined SKIP_DOWNLOAD (
 )
 
 rem ---------------------------------------------------------------------------
-rem Locate mod executable and make it available on PATH
+rem Run install.cmd from the extracted distribution
 rem ---------------------------------------------------------------------------
-set "MOD_BIN="
-for %%e in (exe bat cmd) do (
-    if not defined MOD_BIN (
-        if exist "%EXTRACT_DIR%\bin\mod.%%e" set "MOD_BIN=%EXTRACT_DIR%\bin\mod.%%e"
-    )
+if exist "%EXTRACT_DIR%\install.cmd" (
+    call "%EXTRACT_DIR%\install.cmd"
 )
-if not defined MOD_BIN (
-    for %%e in (exe bat cmd) do (
-        if not defined MOD_BIN (
-            for /r "%EXTRACT_DIR%" %%f in (mod.%%e) do (
-                if not defined MOD_BIN set "MOD_BIN=%%f"
-            )
-        )
-    )
-)
-
-if not defined MOD_BIN (
-    echo Error: Could not find mod executable in %EXTRACT_DIR% >&2
-    exit /b 1
-)
-
-rem Copy to a stable bin directory for PATH
-set "BIN_DIR=%CLI_HOME%\bin"
-if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
-for %%f in ("!MOD_BIN!") do set "MOD_EXT=%%~xf"
-for %%f in ("!MOD_BIN!") do set "MOD_NAME=%%~nxf"
-if not exist "%BIN_DIR%\!MOD_NAME!" copy "!MOD_BIN!" "%BIN_DIR%\!MOD_NAME!" >nul
 
 rem Execute only if arguments were provided
-if "%~1"=="" (
-    echo Moderne CLI installed to %BIN_DIR% >&2
-    exit /b 0
-)
+if "%~1"=="" exit /b 0
 
-"%BIN_DIR%\!MOD_NAME!" %*
+mod %*
 exit /b %ERRORLEVEL%
