@@ -17,22 +17,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install and configure (Linux/macOS)
+      - name: Install wrapper (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
           chmod +x modw configure-mod.sh
-          ./configure-mod.sh init
+          ./modw --version
 
-      - name: Install and configure (Windows)
+      - name: Install wrapper (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: modw.cmd --version
+
+      - name: Configure CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: ./configure-mod.sh init
+
+      - name: Configure CLI (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: configure-mod.cmd init
 
-      - name: Verify mod CLI (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: ./modw --version
-
-      - name: Verify mod CLI (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: modw.cmd --version
+      - name: Verify mod is on PATH
+        run: mod version
