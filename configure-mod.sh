@@ -1,8 +1,7 @@
 #!/bin/bash
 #
-# Custom Moderne CLI wrapper script (Linux / macOS)
-# Handles initialization (mod config commands).
-# Delegates actual CLI execution to modw.
+# Configures the Moderne CLI environment.
+# Expects "mod" to already be on the PATH (installed via modw).
 #
 set -euo pipefail
 
@@ -10,13 +9,6 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MOD="$SCRIPT_DIR/modw"
-
-# Run modw and suppress installation banner messages
-run_mod() {
-    "$MOD" "$@" 2>&1 | { grep -v -e "Added .* to PATH" -e "open a new terminal to use" -e "Moderne CLI installed to" || true; }
-}
 MODERNE_TENANT="https://moderne.mycompany.com"
 ARTIFACTORY_MAVEN_URL="https://artifactory.mycompany.com/maven"
 
@@ -27,16 +19,16 @@ init() {
     echo "Configuring Moderne CLI environment..." >&2
 
     echo "Setting Moderne tenant to $MODERNE_TENANT..." >&2
-    run_mod config moderne edit "$MODERNE_TENANT" --api="$MODERNE_TENANT"
+    mod config moderne edit "$MODERNE_TENANT" --api="$MODERNE_TENANT"
 
     echo "Syncing license from Moderne platform..." >&2
-    run_mod config license moderne sync
+    mod config license moderne sync
 
     echo "Configuring recipe artifacts from $ARTIFACTORY_MAVEN_URL..." >&2
-    run_mod config recipes artifacts artifactory edit "$ARTIFACTORY_MAVEN_URL"
+    mod config recipes artifacts artifactory edit "$ARTIFACTORY_MAVEN_URL"
 
     echo "Disallowing Maven Central for artifact resolution..." >&2
-    run_mod config features no-maven-central
+    mod config features no-maven-central
 
     echo -e "${GREEN}CLI environment configured successfully.${NC}" >&2
 }
@@ -56,7 +48,7 @@ main() {
         exit 1
     fi
 
-    run_mod "$@"
+    mod "$@"
 }
 
 main "$@"
