@@ -15,7 +15,7 @@ MOD="$SCRIPT_DIR/modw"
 
 # Run modw and suppress installation banner messages
 run_mod() {
-    "$MOD" "$@" 2>&1 | grep -v -e "Added .* to PATH" -e "open a new terminal to use" -e "Moderne CLI installed to"
+    "$MOD" "$@" 2>&1 | { grep -v -e "Added .* to PATH" -e "open a new terminal to use" -e "Moderne CLI installed to" || true; }
 }
 MODERNE_TENANT="https://moderne.mycompany.com"
 ARTIFACTORY_MAVEN_URL="https://artifactory.mycompany.com/maven"
