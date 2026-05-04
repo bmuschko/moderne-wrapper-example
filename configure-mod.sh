@@ -21,8 +21,7 @@ init() {
     echo "Setting Moderne tenant to $MODERNE_TENANT..." >&2
     mod config moderne edit "$MODERNE_TENANT" --api="$MODERNE_TENANT"
 
-    echo "Syncing license from Moderne platform..." >&2
-    mod config license moderne sync
+    # mod config license moderne sync
 
     echo "Configuring recipe artifacts from $ARTIFACTORY_MAVEN_URL..." >&2
     mod config recipes artifacts artifactory edit "$ARTIFACTORY_MAVEN_URL"
