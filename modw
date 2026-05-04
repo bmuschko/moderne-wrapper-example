@@ -86,7 +86,7 @@ download_distribution() {
     echo "Downloading Moderne CLI ${version} for ${platform}..." >&2
     echo "  $download_url" >&2
 
-    local tmp_file="$DIST_DIR/${filename}.tmp"
+    local tmp_file="$DIST_DIR/${filename}.tmp.$$"
     curl --silent --fail --show-error --location --output "$tmp_file" "$download_url" || {
         rm -f "$tmp_file"
         echo "Error: Failed to download CLI from $download_url" >&2
@@ -113,8 +113,13 @@ download_distribution() {
         echo "  Checksum verified." >&2
     fi
 
-    mv "$tmp_file" "$cached"
-    chmod +x "$cached"
+    # Atomic move — if another process finished first, discard our copy
+    if [[ -f "$cached" ]]; then
+        rm -f "$tmp_file"
+    else
+        mv "$tmp_file" "$cached"
+        chmod +x "$cached"
+    fi
 
     echo "$cached"
 }

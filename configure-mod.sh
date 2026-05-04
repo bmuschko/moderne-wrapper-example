@@ -12,6 +12,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOD="$SCRIPT_DIR/modw"
+MODERNE_TENANT="https://moderne.mycompany.com"
 
 # ---------------------------------------------------------------------------
 # Initialization — runs once to configure the CLI environment
@@ -19,17 +20,16 @@ MOD="$SCRIPT_DIR/modw"
 init() {
     echo "Configuring Moderne CLI environment..." >&2
 
-    # 1. Sync license from the Moderne platform
+    echo "Setting Moderne tenant to $MODERNE_TENANT..." >&2
+    "$MOD" config moderne edit "$MODERNE_TENANT" --api="$MODERNE_TENANT"
+
+    echo "Syncing license from Moderne platform..." >&2
     "$MOD" config license moderne sync
 
-    # 2. Sync recipes from the Moderne platform
-    "$MOD" config recipes moderne sync
-
-    # 3. Disallow Maven Central for recipe/artifact resolution
+    echo "Disallowing Maven Central for artifact resolution..." >&2
     "$MOD" config features no-maven-central
 
-    # 4. Install a corporate CA certificate into the Java trust store
-    #    Adjust the path to your actual certificate file.
+    echo "Installing corporate CA certificate into Java trust store..." >&2
     "$MOD" config http trust-store edit file --path "$SCRIPT_DIR/certs/corporate-ca.pem"
 
     echo -e "${GREEN}CLI environment configured successfully.${NC}" >&2

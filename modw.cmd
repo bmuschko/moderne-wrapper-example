@@ -74,8 +74,9 @@ if not exist "%EXTRACT_DIR%\bin\mod.exe" (
     echo Downloading Moderne CLI %VERSION% for Windows... >&2
     echo   !DOWNLOAD_URL! >&2
 
-    curl --silent --fail --show-error --location --output "%CACHED%" "!DOWNLOAD_URL!" || (
-        del "%CACHED%" 2>nul
+    set "TMP_FILE=%CACHED%.tmp.%RANDOM%"
+    curl --silent --fail --show-error --location --output "!TMP_FILE!" "!DOWNLOAD_URL!" || (
+        del "!TMP_FILE!" 2>nul
         echo Error: Failed to download CLI from !DOWNLOAD_URL! >&2
         exit /b 1
     )
@@ -86,11 +87,11 @@ if not exist "%EXTRACT_DIR%\bin\mod.exe" (
     curl --silent --fail --output "!SHA256_FILE!" "!SHA256_URL!" 2>nul
     if exist "!SHA256_FILE!" (
         for /f "tokens=1" %%s in ('type "!SHA256_FILE!"') do set "EXPECTED_SHA=%%s"
-        for /f "skip=1 tokens=*" %%h in ('certutil -hashfile "%CACHED%" SHA256') do (
+        for /f "skip=1 tokens=*" %%h in ('certutil -hashfile "!TMP_FILE!" SHA256') do (
             if not defined ACTUAL_SHA set "ACTUAL_SHA=%%h"
         )
         if /i not "!ACTUAL_SHA!"=="!EXPECTED_SHA!" (
-            del "%CACHED%" 2>nul
+            del "!TMP_FILE!" 2>nul
             del "!SHA256_FILE!" 2>nul
             echo Error: SHA-256 checksum mismatch >&2
             echo   Expected: !EXPECTED_SHA! >&2
@@ -101,14 +102,18 @@ if not exist "%EXTRACT_DIR%\bin\mod.exe" (
         del "!SHA256_FILE!" 2>nul
     )
 
-    rem Extract ZIP
-    echo   Extracting... >&2
-    if not exist "%EXTRACT_DIR%" mkdir "%EXTRACT_DIR%"
-    powershell -NoProfile -Command "Expand-Archive -Path '%CACHED%' -DestinationPath '%EXTRACT_DIR%' -Force" || (
-        echo Error: Failed to extract %CACHED% >&2
-        exit /b 1
+    rem Extract ZIP — if another process finished first, discard our copy
+    if exist "%EXTRACT_DIR%\bin\mod.exe" (
+        del "!TMP_FILE!" 2>nul
+    ) else (
+        echo   Extracting... >&2
+        if not exist "%EXTRACT_DIR%" mkdir "%EXTRACT_DIR%"
+        powershell -NoProfile -Command "Expand-Archive -Path '!TMP_FILE!' -DestinationPath '%EXTRACT_DIR%' -Force" || (
+            echo Error: Failed to extract !TMP_FILE! >&2
+            exit /b 1
+        )
+        del "!TMP_FILE!" 2>nul
     )
-    del "%CACHED%" 2>nul
 )
 
 rem ---------------------------------------------------------------------------
