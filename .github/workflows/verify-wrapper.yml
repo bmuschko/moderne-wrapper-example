@@ -31,6 +31,17 @@ jobs:
           call modw.cmd
           echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
 
+      - name: Debug Windows install (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          echo === CLI home contents ===
+          dir /s /b "%USERPROFILE%\.moderne\cli"
+          echo === GITHUB_PATH contents ===
+          type "%GITHUB_PATH%"
+          echo === Current PATH ===
+          echo %PATH%
+
       - name: Verify mod is on PATH
         run: mod --version
 
