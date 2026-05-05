@@ -56,28 +56,3 @@ The `init` subcommand runs the following configuration steps:
 
 Edit the `MODERNE_TENANT` and `ARTIFACTORY_MAVEN_URL` variables at the top of each script to match your company's environment.
 
-### Wrapper Properties
-
-| File | Description |
-|------|-------------|
-| `moderne/wrapper/moderne-wrapper.properties` | Configuration file read by `modw` and `modw.cmd`. Controls which CLI version to download and from where. |
-
-Supported properties:
-
-| Property | Description | Default |
-|----------|-------------|---------|
-| `version` | CLI version to download. Use `RELEASE` for the latest release, or pin a specific version like `4.2.1`. | `RELEASE` |
-| `distributionUrl` | Base URL for downloading the CLI distribution archives. | `https://repo1.maven.org/maven2/io/moderne` |
-
-These can be overridden at runtime with environment variables:
-
-- `MODERNE_WRAPPER_VERSION` -- overrides `version`
-- `MODERNE_WRAPPER_DISTRIBUTION_URL` -- overrides `distributionUrl`
-- `MODERNE_CLI_HOME` -- overrides the CLI install location (default: `~/.moderne/cli`)
-
-### CI Workflow
-
-| File | Description |
-|------|-------------|
-| `.github/workflows/verify-wrapper.yml` | GitHub Actions workflow that verifies the wrapper works on all three platforms (Ubuntu, macOS, Windows). Installs the CLI via the wrapper, verifies `mod --version` runs successfully, and configures the CLI environment. |
-
