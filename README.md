@@ -17,9 +17,6 @@ export PATH="$HOME/.moderne/cli/bin:$PATH"
 
 # Configure the CLI environment
 ./configure-mod.sh init
-
-# Run a mod command
-mod --version
 ```
 
 ### Windows
@@ -33,9 +30,6 @@ set PATH=%USERPROFILE%\.moderne\cli\bin;%PATH%
 
 rem Configure the CLI environment
 call configure-mod.cmd init
-
-rem Run a mod command
-mod --version
 ```
 
 ## Repository Structure
@@ -87,25 +81,3 @@ These can be overridden at runtime with environment variables:
 |------|-------------|
 | `.github/workflows/verify-wrapper.yml` | GitHub Actions workflow that verifies the wrapper works on all three platforms (Ubuntu, macOS, Windows). Installs the CLI via the wrapper, verifies `mod --version` runs successfully, and configures the CLI environment. |
 
-## Adopting in Your Project
-
-1. Copy the following files into your repository root:
-   - `modw`
-   - `modw.cmd`
-   - `configure-mod.sh`
-   - `configure-mod.cmd`
-   - `moderne/wrapper/moderne-wrapper.properties`
-
-2. Ensure `modw` and `configure-mod.sh` have executable permissions:
-   ```bash
-   git update-index --chmod=+x modw configure-mod.sh
-   ```
-
-3. Edit `configure-mod.sh` and `configure-mod.cmd` to set `MODERNE_TENANT` and `ARTIFACTORY_MAVEN_URL` to your company's values.
-
-4. Optionally pin a specific CLI version in `moderne-wrapper.properties`:
-   ```properties
-   version=4.2.1
-   ```
-
-5. Optionally copy `.github/workflows/verify-wrapper.yml` to verify the setup in CI.
