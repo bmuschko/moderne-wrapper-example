@@ -54,5 +54,5 @@ The `init` subcommand runs the following configuration steps:
 2. Configure recipe artifacts from Artifactory (`mod config recipes artifacts artifactory edit`)
 3. Disallow Maven Central for artifact resolution (`mod config features no-maven-central`)
 
-Edit the `MODERNE_TENANT` and `ARTIFACTORY_MAVEN_URL` variables at the top of each script to match your company's environment.
+The commands above are examples. Modify them based on your company's needs -- add, remove, or change commands as required. Edit the `MODERNE_TENANT` and `ARTIFACTORY_MAVEN_URL` variables at the top of each script to match your environment.
 
