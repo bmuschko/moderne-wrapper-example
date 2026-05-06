@@ -22,20 +22,33 @@ read_property() {
 }
 
 # ---------------------------------------------------------------------------
-# Detect the platform artifact name
+# Detect the platform artifact name (os + architecture)
 # ---------------------------------------------------------------------------
 detect_platform() {
     local os
     os="$(uname -s)"
     case "$os" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "osx" ;;
+        Linux*)  os="linux" ;;
+        Darwin*) os="osx" ;;
         *)
             echo "Error: Unsupported operating system: $os" >&2
             echo "Use modw.cmd on Windows." >&2
             exit 1
             ;;
     esac
+
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|amd64) arch="x64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *)
+            echo "Error: Unsupported architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "${os}-${arch}"
 }
 
 # ---------------------------------------------------------------------------
