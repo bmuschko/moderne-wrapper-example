@@ -38,7 +38,7 @@ rem ---------------------------------------------------------------------------
 rem Resolve RELEASE version via maven-metadata.xml
 rem ---------------------------------------------------------------------------
 if "%VERSION%"=="RELEASE" (
-    set "METADATA_URL=%BASE_URL%/moderne-cli-windows-x64/maven-metadata.xml"
+    set "METADATA_URL=%BASE_URL%/moderne-cli-windows/maven-metadata.xml"
     set "METADATA_FILE=%DIST_DIR%\maven-metadata.xml"
     if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 
@@ -61,7 +61,7 @@ if "%VERSION%"=="RELEASE" (
 rem ---------------------------------------------------------------------------
 rem Download distribution if not cached
 rem ---------------------------------------------------------------------------
-set "ARTIFACT=moderne-cli-windows-x64"
+set "ARTIFACT=moderne-cli-windows"
 set "FILENAME=%ARTIFACT%-%VERSION%.zip"
 set "CACHED=%DIST_DIR%\%FILENAME%"
 set "EXTRACT_DIR=%DIST_DIR%\%ARTIFACT%-%VERSION%"
