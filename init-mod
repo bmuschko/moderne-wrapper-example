@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# Initializes the Moderne CLI wrapper.
+# Sets up the "mod" command to delegate to the project-local modw wrapper,
+# then runs configure-mod.sh to configure the CLI environment.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+MODERNE_CLI_HOME="${MODERNE_CLI_HOME:-$HOME/.moderne/cli}"
+BIN_DIR="$MODERNE_CLI_HOME/bin"
+mkdir -p "$BIN_DIR"
+
+# Create/update the mod symlink to point to the project-local modw
+ln -sf "$SCRIPT_DIR/modw" "$BIN_DIR/mod"
+echo "Created symlink: $BIN_DIR/mod -> $SCRIPT_DIR/modw"
+
+# Ensure the bin directory is on PATH
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    export PATH="$BIN_DIR:$PATH"
+    echo "Added $BIN_DIR to PATH for this session."
+    echo "To make this permanent, add the following to your shell profile:"
+    echo "  export PATH=\"$BIN_DIR:\$PATH\""
+fi
+
+# Configure the CLI environment
+"$SCRIPT_DIR/configure-mod.sh" init

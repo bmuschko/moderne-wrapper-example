@@ -1,163 +1,1112 @@
-#!/bin/bash
+#!/bin/sh
 #
-# Moderne CLI Wrapper for Linux and macOS
-# Downloads and caches the Moderne CLI distribution, then executes it.
+# Moderne CLI wrapper script.
+# Downloads a platform-specific distribution (JAR + JRE) from Maven Central,
+# creates a Project Leyden AOT cache on first run, then launches the CLI.
 #
-set -euo pipefail
+# Environment variables:
+#   MODERNE_JAVA_HOME  - Use this JDK instead of auto-detection
+#   MODERNE_JAR        - Use this JAR instead of auto-detection
+#   MODERNE_OPTS       - Additional JVM options (e.g. -Xmx2g)
+#   MODERNE_CLI_HOME   - Base CLI directory (default: ~/.moderne/cli)
+#   MODERNE_WRAPPER_DISTRIBUTION_USERNAME - Basic auth username for distribution downloads
+#   MODERNE_WRAPPER_DISTRIBUTION_PASSWORD - Basic auth password for distribution downloads
+#   MODERNE_WRAPPER_DISTRIBUTION_TOKEN    - Bearer token for distribution downloads
+#   MODERNE_WRAPPER_DISTRIBUTION_URL      - Override distributionUrl without properties file
+#   MODERNE_WRAPPER_VERSION               - Override CLI version without properties file
+#
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROPERTIES_FILE="$SCRIPT_DIR/moderne/wrapper/moderne-wrapper.properties"
-CLI_HOME="${MODERNE_CLI_HOME:-$HOME/.moderne/cli}"
-DIST_DIR="$CLI_HOME/dist"
+set -e
 
-# ---------------------------------------------------------------------------
-# Read a property value from moderne-wrapper.properties
-# ---------------------------------------------------------------------------
-read_property() {
-    local key="$1"
-    local default="${2:-}"
-    local value
-    value=$(grep "^${key}=" "$PROPERTIES_FILE" 2>/dev/null | head -1 | cut -d'=' -f2-)
-    echo "${value:-$default}"
+MODERNE_CLI_HOME="${MODERNE_CLI_HOME:-$HOME/.moderne/cli}"
+DIST_DIR="$MODERNE_CLI_HOME/dist"
+MIN_JAVA_VERSION=25
+SONATYPE_SNAPSHOTS="https://central.sonatype.com/repository/maven-snapshots"
+MAVEN_CENTRAL="https://repo1.maven.org/maven2"
+
+# --- Platform detection ---
+
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "mac" ;;
+        CYGWIN*|MINGW*|MSYS*) echo "windows" ;;
+        *)       echo "linux" ;;
+    esac
 }
 
-# ---------------------------------------------------------------------------
-# Detect the platform artifact name
-# ---------------------------------------------------------------------------
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "x64" ;;
+        aarch64|arm64) echo "aarch64" ;;
+        *)             echo "x64" ;;
+    esac
+}
+
 detect_platform() {
-    local os
-    os="$(uname -s)"
-    case "$os" in
-        Linux*)
-            local arch
-            arch="$(uname -m)"
-            case "$arch" in
-                x86_64|amd64) echo "linux-x64" ;;
-                aarch64|arm64) echo "linux-aarch64" ;;
-                *)            echo "linux" ;;
-            esac
+    case "$(detect_os)" in
+        mac) echo "osx" ;;
+        *)   detect_os ;;
+    esac
+}
+
+# --- HTTP helpers ---
+
+http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        if [ -n "$DIST_TOKEN" ]; then
+            curl -fsSL -H "Authorization: Bearer $DIST_TOKEN" -o "$2" "$1"
+        elif [ -n "$DIST_USERNAME" ]; then
+            curl -fsSL --user "$DIST_USERNAME:$DIST_PASSWORD" -o "$2" "$1"
+        else
+            curl -fsSL -o "$2" "$1"
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if [ -n "$DIST_TOKEN" ]; then
+            wget -q --header="Authorization: Bearer $DIST_TOKEN" -O "$2" "$1"
+        elif [ -n "$DIST_USERNAME" ]; then
+            wget -q --user="$DIST_USERNAME" --password="$DIST_PASSWORD" -O "$2" "$1"
+        else
+            wget -q -O "$2" "$1"
+        fi
+    else
+        echo "ERROR: Neither curl nor wget found." >&2
+        exit 1
+    fi
+}
+
+http_download() {
+    if command -v curl >/dev/null 2>&1; then
+        if [ -n "$DIST_TOKEN" ]; then
+            curl -fSL --progress-bar -H "Authorization: Bearer $DIST_TOKEN" -o "$2" "$1"
+        elif [ -n "$DIST_USERNAME" ]; then
+            curl -fSL --progress-bar --user "$DIST_USERNAME:$DIST_PASSWORD" -o "$2" "$1"
+        else
+            curl -fSL --progress-bar -o "$2" "$1"
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if [ -n "$DIST_TOKEN" ]; then
+            wget -q --show-progress --header="Authorization: Bearer $DIST_TOKEN" -O "$2" "$1"
+        elif [ -n "$DIST_USERNAME" ]; then
+            wget -q --show-progress --user="$DIST_USERNAME" --password="$DIST_PASSWORD" -O "$2" "$1"
+        else
+            wget -q --show-progress -O "$2" "$1"
+        fi
+    else
+        echo "ERROR: Neither curl nor wget found." >&2
+        exit 1
+    fi
+}
+
+# Fetch the HTTP status code for a URL via a HEAD request. Follows redirects
+# and prints the final status. Used to classify a failed CLI distribution
+# download as a 403/404 (recoverable when an old jar exists) vs. other errors.
+http_head_status() {
+    if command -v curl >/dev/null 2>&1; then
+        if [ -n "$DIST_TOKEN" ]; then
+            curl -sLI -H "Authorization: Bearer $DIST_TOKEN" -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+        elif [ -n "$DIST_USERNAME" ]; then
+            curl -sLI --user "$DIST_USERNAME:$DIST_PASSWORD" -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+        else
+            curl -sLI -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        _HEAD_OUT=""
+        if [ -n "$DIST_TOKEN" ]; then
+            _HEAD_OUT="$(wget --spider --server-response --header="Authorization: Bearer $DIST_TOKEN" "$1" 2>&1 || true)"
+        elif [ -n "$DIST_USERNAME" ]; then
+            _HEAD_OUT="$(wget --spider --server-response --user="$DIST_USERNAME" --password="$DIST_PASSWORD" "$1" 2>&1 || true)"
+        else
+            _HEAD_OUT="$(wget --spider --server-response "$1" 2>&1 || true)"
+        fi
+        echo "$_HEAD_OUT" | awk '/^[[:space:]]*HTTP\//{code=$2} END{print code}'
+    fi
+}
+
+# Classify a failed maven-metadata.xml fetch.
+# If the fetch returned 403/404 AND a CLI jar with a recorded version is already
+# installed, echoes that installed version to stdout (so the caller's command
+# substitution captures it as the resolved version) and returns 0. Otherwise
+# returns 1; the caller should emit its existing error and exit 1.
+classify_metadata_fetch_failure() {
+    _META_URL="$1"
+    _META_STATUS="$(http_head_status "$_META_URL")"
+    case "$_META_STATUS" in
+        403|404)
+            if [ -f "$DIST_DIR/lib/moderne-cli.jar" ] && [ -f "$DIST_DIR/version.txt" ]; then
+                _INSTALLED="$(cat "$DIST_DIR/version.txt")"
+                if [ -n "$_INSTALLED" ]; then
+                    echo "WARN: Could not fetch $_META_URL (HTTP $_META_STATUS)." >&2
+                    echo "      Continuing with previously installed version $_INSTALLED." >&2
+                    echo "$_INSTALLED"
+                    return 0
+                fi
+            fi
             ;;
-        Darwin*) echo "osx" ;;
+    esac
+    return 1
+}
+
+# Classify a failed CLI distribution download.
+# Returns 0 if the caller should fall back to the previously installed CLI jar.
+# Returns 1 if the caller should treat the failure as fatal.
+classify_cli_download_failure() {
+    _CLI_URL="$1"
+    _CLI_STATUS="$2"
+    case "$_CLI_STATUS" in
+        403|404)
+            if [ -f "$DIST_DIR/lib/moderne-cli.jar" ]; then
+                echo "WARN: Failed to download Moderne CLI from $_CLI_URL (HTTP $_CLI_STATUS)." >&2
+                echo "      Continuing with previously installed CLI jar at $DIST_DIR/lib/moderne-cli.jar." >&2
+                return 0
+            fi
+            echo "ERROR: Failed to download Moderne CLI from $_CLI_URL (HTTP $_CLI_STATUS)." >&2
+            echo "       No previously installed CLI jar found." >&2
+            return 1
+            ;;
         *)
-            echo "Error: Unsupported operating system: $os" >&2
-            echo "Use modw.cmd on Windows." >&2
-            exit 1
+            echo "ERROR: Failed to download Moderne CLI from $_CLI_URL${_CLI_STATUS:+ (HTTP $_CLI_STATUS)}." >&2
+            return 1
             ;;
     esac
 }
 
-# ---------------------------------------------------------------------------
-# Resolve RELEASE to an actual version via maven-metadata.xml
-# ---------------------------------------------------------------------------
-resolve_version() {
-    local version="$1"
-    local base_url="$2"
-    local platform="$3"
+# --- Authentication ---
 
-    if [[ "$version" == "RELEASE" ]]; then
-        local metadata_url="${base_url}/moderne-cli-${platform}/maven-metadata.xml"
-        local metadata
-        metadata=$(curl --silent --fail --show-error "$metadata_url") || {
-            echo "Error: Failed to fetch version metadata from $metadata_url" >&2
-            exit 1
-        }
-        version=$(echo "$metadata" | grep '<release>' | sed 's/.*<release>\(.*\)<\/release>.*/\1/')
-        if [[ -z "$version" ]]; then
-            echo "Error: Could not resolve RELEASE version from metadata" >&2
-            exit 1
-        fi
+resolve_auth() {
+    # Environment variables take precedence over properties
+    DIST_USERNAME="${MODERNE_WRAPPER_DISTRIBUTION_USERNAME:-}"
+    DIST_PASSWORD="${MODERNE_WRAPPER_DISTRIBUTION_PASSWORD:-}"
+    DIST_TOKEN="${MODERNE_WRAPPER_DISTRIBUTION_TOKEN:-}"
+
+    # Fall back to properties file
+    if [ -z "$DIST_USERNAME" ] && [ -z "$DIST_TOKEN" ] && [ -n "$PROPS_FILE" ] && [ -f "$PROPS_FILE" ]; then
+        DIST_USERNAME="$(grep "^distributionUsername=" "$PROPS_FILE" | cut -d= -f2-)"
+        DIST_PASSWORD="$(grep "^distributionPassword=" "$PROPS_FILE" | cut -d= -f2-)"
+        DIST_TOKEN="$(grep "^distributionToken=" "$PROPS_FILE" | cut -d= -f2-)"
     fi
-    echo "$version"
+
+    # Token takes precedence over username/password
+    if [ -n "$DIST_TOKEN" ]; then
+        DIST_USERNAME=""
+        DIST_PASSWORD=""
+    fi
 }
 
-# ---------------------------------------------------------------------------
-# Download the CLI distribution if not already cached
-# ---------------------------------------------------------------------------
-download_distribution() {
-    local base_url="$1"
-    local platform="$2"
-    local version="$3"
-    local artifact="moderne-cli-${platform}"
-    local filename="${artifact}-${version}.sh"
-    local cached="$DIST_DIR/$filename"
+# --- Version resolution ---
 
-    if [[ -f "$cached" ]]; then
-        echo "$cached"
+# Returns 0 (true) if $1 >= $2 using dotted-decimal version comparison.
+version_gte() {
+    [ "$(printf '%s\n%s' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$1" ]
+}
+
+# Resolve a version from maven-metadata.xml.
+#   $1 = repository base URL (e.g. https://repo1.maven.org/maven2)
+#   $2 = "release" or "snapshot"
+resolve_version_from_maven() {
+    METADATA_URL="$1/io/moderne/moderne-cli/maven-metadata.xml"
+    METADATA_FILE="$(mktemp)"
+    http_get "$METADATA_URL" "$METADATA_FILE" || {
+        rm -f "$METADATA_FILE"
+        if classify_metadata_fetch_failure "$METADATA_URL"; then
+            return 0
+        fi
+        echo "ERROR: Could not fetch $METADATA_URL${_META_STATUS:+ (HTTP $_META_STATUS)}." >&2
+        if [ -n "$PROPS_FILE" ]; then
+            echo "" >&2
+            echo "  Version is configured in: $PROPS_FILE" >&2
+        fi
+        echo "" >&2
+        echo "  To fix, either:" >&2
+        echo "    - Switch to the latest stable release:" >&2
+        echo "        mod wrapper --version=RELEASE" >&2
+        if [ -n "$PROPS_FILE" ]; then
+            echo "      or remove the 'version=' line from the properties file." >&2
+        fi
+        echo "    - Pin a specific version (e.g. 4.0.4):" >&2
+        echo "        mod wrapper --version=4.0.4" >&2
+        exit 1
+    }
+    if [ "$2" = "snapshot" ]; then
+        RESOLVED="$(sed -n 's/.*<latest>\(.*\)<\/latest>.*/\1/p' "$METADATA_FILE")"
+        if [ -z "$RESOLVED" ]; then
+            RESOLVED="$(sed -n 's/.*<version>\(.*-SNAPSHOT\)<\/version>.*/\1/p' "$METADATA_FILE" | tail -1)"
+        fi
+    else
+        RESOLVED="$(sed -n 's/.*<release>\(.*\)<\/release>.*/\1/p' "$METADATA_FILE")"
+    fi
+    rm -f "$METADATA_FILE"
+    if [ -z "$RESOLVED" ]; then
+        echo "ERROR: Could not determine Moderne CLI version from $METADATA_URL." >&2
+        exit 1
+    fi
+    echo "$RESOLVED"
+}
+
+# Resolve the timestamped artifact version for a SNAPSHOT.
+#   $1 = repository base URL
+#   $2 = SNAPSHOT version (e.g. 1.2.3-SNAPSHOT)
+#   $3 = artifact name (e.g. moderne-cli-osx)
+resolve_snapshot_artifact_version() {
+    METADATA_URL="$1/io/moderne/$3/$2/maven-metadata.xml"
+    METADATA_FILE="$(mktemp)"
+    http_get "$METADATA_URL" "$METADATA_FILE" || {
+        rm -f "$METADATA_FILE"
+        if classify_metadata_fetch_failure "$METADATA_URL"; then
+            return 0
+        fi
+        echo "ERROR: Could not fetch $METADATA_URL${_META_STATUS:+ (HTTP $_META_STATUS)}." >&2
+        echo "" >&2
+        echo "  The snapshot version '$2' is not available." >&2
+        if [ -n "$PROPS_FILE" ]; then
+            echo "  Version is configured in: $PROPS_FILE" >&2
+        fi
+        echo "" >&2
+        echo "  To fix, either:" >&2
+        echo "    - Switch to the latest stable release:" >&2
+        echo "        mod wrapper --version=RELEASE" >&2
+        if [ -n "$PROPS_FILE" ]; then
+            echo "      or remove the 'version=' line from the properties file." >&2
+        fi
+        echo "    - Pin a specific version (e.g. 4.0.4):" >&2
+        echo "        mod wrapper --version=4.0.4" >&2
+        exit 1
+    }
+    TIMESTAMP="$(sed -n 's/.*<timestamp>\(.*\)<\/timestamp>.*/\1/p' "$METADATA_FILE")"
+    BUILD_NUM="$(sed -n 's/.*<buildNumber>\(.*\)<\/buildNumber>.*/\1/p' "$METADATA_FILE")"
+    rm -f "$METADATA_FILE"
+    if [ -z "$TIMESTAMP" ] || [ -z "$BUILD_NUM" ]; then
+        echo "ERROR: Could not resolve snapshot artifact version from $METADATA_URL." >&2
+        exit 1
+    fi
+    echo "$(echo "$2" | sed 's/-SNAPSHOT$//')-$TIMESTAMP-$BUILD_NUM"
+}
+
+# Resolve LATEST to the newest version in the early access repo.
+# The early access repo may contain Maven snapshots or regular releases.
+resolve_latest() {
+    LATEST_VERSION="$(resolve_version_from_maven "$EARLY_ACCESS_REPO" snapshot)"
+    DOWNLOAD_REPO="$EARLY_ACCESS_REPO"
+    if echo "$LATEST_VERSION" | grep -q '\-SNAPSHOT$'; then
+        SNAPSHOT_VERSION="$LATEST_VERSION"
+        if [ -z "$CUSTOM_URL" ]; then
+            MOD_VERSION="$(resolve_snapshot_artifact_version "$EARLY_ACCESS_REPO" "$SNAPSHOT_VERSION" "$DIST_ARTIFACT")"
+        else
+            MOD_VERSION="$LATEST_VERSION"
+        fi
+    else
+        MOD_VERSION="$LATEST_VERSION"
+    fi
+}
+
+# Resolve an explicit SNAPSHOT version (e.g. 3.58.0-SNAPSHOT) to its timestamped artifact.
+resolve_snapshot() {
+    SNAPSHOT_VERSION="$MOD_VERSION"
+    DOWNLOAD_REPO="$EARLY_ACCESS_REPO"
+    if [ -z "$CUSTOM_URL" ]; then
+        MOD_VERSION="$(resolve_snapshot_artifact_version "$EARLY_ACCESS_REPO" "$SNAPSHOT_VERSION" "$DIST_ARTIFACT")"
+    else
+        MOD_VERSION="$SNAPSHOT_VERSION"
+    fi
+}
+
+# Resolve RELEASE to a concrete release version.
+resolve_release() {
+    MOD_VERSION="$(resolve_version_from_maven "$DOWNLOAD_REPO" release)"
+}
+
+# --- Install lock ---
+# Serializes ensure_distribution and download_jdk across concurrent wrapper
+# invocations sharing $MODERNE_CLI_HOME. Atomic via mkdir; stale holders are
+# detected by checking whether the owning PID is still alive.
+
+acquire_install_lock() {
+    _LOCK_DIR="$MODERNE_CLI_HOME/.install-lock"
+    mkdir -p "$MODERNE_CLI_HOME"
+    _WAITED=0
+    while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+        _HOLDER_PID=""
+        [ -f "$_LOCK_DIR/pid" ] && _HOLDER_PID="$(cat "$_LOCK_DIR/pid" 2>/dev/null)"
+        case "$_HOLDER_PID" in
+            '')
+                # Pid file not yet written — holder just acquired. Wait.
+                ;;
+            *[!0-9]*)
+                rm -rf "$_LOCK_DIR"
+                continue
+                ;;
+            *)
+                if ! kill -0 "$_HOLDER_PID" 2>/dev/null; then
+                    rm -rf "$_LOCK_DIR"
+                    continue
+                fi
+                ;;
+        esac
+        _WAITED=$((_WAITED + 1))
+        if [ "$_WAITED" -ge 300 ]; then
+            echo "ERROR: Timed out waiting for install lock held by PID $_HOLDER_PID." >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "$$" > "$_LOCK_DIR/pid"
+    trap 'rm -rf "$_LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
+}
+
+release_install_lock() {
+    rm -rf "$_LOCK_DIR"
+    trap - EXIT INT TERM HUP
+}
+
+# --- Distribution download ---
+
+ensure_distribution() {
+    # Skip if MODERNE_JAR is set (dev/override)
+    if [ -n "$MODERNE_JAR" ]; then
         return 0
     fi
 
-    local download_url="${base_url}/${artifact}/${version}/${filename}"
-    local sha256_url="${download_url}.sha256"
-
-    mkdir -p "$DIST_DIR"
-
-    echo "Downloading Moderne CLI ${version} for ${platform}..." >&2
-    echo "  $download_url" >&2
-
-    local tmp_file="$DIST_DIR/${filename}.tmp.$$"
-    curl --silent --fail --show-error --location --output "$tmp_file" "$download_url" || {
-        rm -f "$tmp_file"
-        echo "Error: Failed to download CLI from $download_url" >&2
-        exit 1
-    }
-
-    # Verify SHA-256 checksum
-    local expected_sha256
-    expected_sha256=$(curl --silent --fail "$sha256_url" 2>/dev/null | awk '{print $1}') || true
-    if [[ -n "$expected_sha256" ]]; then
-        local actual_sha256
-        if command -v sha256sum &>/dev/null; then
-            actual_sha256=$(sha256sum "$tmp_file" | awk '{print $1}')
-        else
-            actual_sha256=$(shasum -a 256 "$tmp_file" | awk '{print $1}')
+    # Skip if local Gradle build output exists (dev workflow)
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    BUILD_LIBS="$SCRIPT_DIR/mod/build/libs"
+    if [ -d "$BUILD_LIBS" ]; then
+        NEWEST_JAR="$(ls -t "$BUILD_LIBS"/mod-*-fat.jar 2>/dev/null | head -1)"
+        if [ -n "$NEWEST_JAR" ]; then
+            return 0
         fi
-        if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-            rm -f "$tmp_file"
-            echo "Error: SHA-256 checksum mismatch" >&2
-            echo "  Expected: $expected_sha256" >&2
-            echo "  Actual:   $actual_sha256" >&2
+    fi
+
+    # Read version from properties
+    MOD_VERSION=""
+    if [ -f "$PROPS_FILE" ]; then
+        MOD_VERSION="$(grep "^version=" "$PROPS_FILE" | cut -d= -f2-)"
+    fi
+    # Environment variable overrides properties
+    if [ -n "$MODERNE_WRAPPER_VERSION" ]; then
+        MOD_VERSION="$MODERNE_WRAPPER_VERSION"
+    fi
+    if [ -z "$MOD_VERSION" ]; then
+        MOD_VERSION="RELEASE"
+    fi
+
+    # Read custom distribution URL if set
+    CUSTOM_URL=""
+    if [ -f "$PROPS_FILE" ]; then
+        CUSTOM_URL="$(grep "^distributionUrl=" "$PROPS_FILE" | cut -d= -f2-)"
+    fi
+    # Environment variable overrides properties
+    if [ -n "$MODERNE_WRAPPER_DISTRIBUTION_URL" ]; then
+        CUSTOM_URL="$MODERNE_WRAPPER_DISTRIBUTION_URL"
+    fi
+
+    # Read custom early access URL if set
+    EARLY_ACCESS_URL=""
+    if [ -f "$PROPS_FILE" ]; then
+        EARLY_ACCESS_URL="$(grep "^distributionUrlEarlyAccess=" "$PROPS_FILE" | cut -d= -f2-)"
+    fi
+    EARLY_ACCESS_REPO="${EARLY_ACCESS_URL:-$SONATYPE_SNAPSHOTS}"
+    DOWNLOAD_REPO="$MAVEN_CENTRAL"
+
+    # Platform-specific artifact for distribution downloads. The distribution
+    # ships a jlink'd JRE, so it's OS+arch-specific. Linux ships separate x64
+    # and aarch64 builds; macOS and Windows are single-arch (aarch64 and x64
+    # respectively) and use unsuffixed artifactIds. Intel mac and Windows
+    # aarch64 are unsupported — set MODERNE_JAVA_HOME to a host JDK there.
+    PLATFORM="$(detect_platform)"
+    case "$PLATFORM" in
+        linux) DIST_ARTIFACT="moderne-cli-linux-$(detect_arch)" ;;
+        *)     DIST_ARTIFACT="moderne-cli-$PLATFORM" ;;
+    esac
+
+    # JAR-only mode: install was bootstrapped by pre-fetching the bare fat jar
+    # with no bundled JRE (the mod-cli-base container layout in moderne-saas,
+    # where the parent moderne/java:25 image already provides JAVA_HOME).
+    # Stay JAR-only on upgrade so we don't grow a ~150MB jlink JRE that
+    # find_java would skip in favour of the host JDK anyway. Pinning
+    # DIST_ARTIFACT to the bare moderne-cli artifact here keeps version
+    # resolution, the fast-path comparison, and the download URL all looking
+    # at the same artifact's snapshot buildNumber sequence — Sonatype tracks
+    # them per-artifact, so resolving against moderne-cli-linux-aarch64 then
+    # downloading from moderne-cli would 404. CUSTOM_URL targets the platform
+    # tarball, so it falls through to the tarball path.
+    JAR_ONLY=
+    if [ -z "$CUSTOM_URL" ] && [ -f "$DIST_DIR/lib/moderne-cli.jar" ] && [ ! -d "$DIST_DIR/jre" ]; then
+        JAR_ONLY=true
+        DIST_ARTIFACT="moderne-cli"
+    fi
+
+    # Resolve special version tokens
+    SNAPSHOT_VERSION=""
+    VERSION_TOKEN="$MOD_VERSION"
+    if [ "$MOD_VERSION" = "LATEST" ]; then
+        resolve_latest
+    elif echo "$MOD_VERSION" | grep -q '\-SNAPSHOT$'; then
+        resolve_snapshot
+    elif [ "$MOD_VERSION" = "RELEASE" ]; then
+        resolve_release
+    fi
+
+    # Fast-path: already installed (no lock needed for a read-only check)
+    VERSION_FILE="$DIST_DIR/version.txt"
+    if [ -f "$VERSION_FILE" ] && [ -f "$DIST_DIR/lib/moderne-cli.jar" ]; then
+        INSTALLED_VERSION="$(cat "$VERSION_FILE")"
+        if [ "$INSTALLED_VERSION" = "$MOD_VERSION" ]; then
+            return 0
+        fi
+        # For RELEASE, don't downgrade if the installed version is already newer
+        # (Maven Central CDN may serve stale metadata)
+        if [ "$VERSION_TOKEN" = "RELEASE" ] && version_gte "$INSTALLED_VERSION" "$MOD_VERSION"; then
+            MOD_VERSION="$INSTALLED_VERSION"
+            return 0
+        fi
+    fi
+
+    # Serialize installation across concurrent wrapper invocations
+    acquire_install_lock
+
+    # Re-check inside the lock: another process may have installed while we waited
+    if [ -f "$VERSION_FILE" ] && [ -f "$DIST_DIR/lib/moderne-cli.jar" ]; then
+        INSTALLED_VERSION="$(cat "$VERSION_FILE")"
+        if [ "$INSTALLED_VERSION" = "$MOD_VERSION" ]; then
+            release_install_lock
+            return 0
+        fi
+        if [ "$VERSION_TOKEN" = "RELEASE" ] && version_gte "$INSTALLED_VERSION" "$MOD_VERSION"; then
+            MOD_VERSION="$INSTALLED_VERSION"
+            release_install_lock
+            return 0
+        fi
+    fi
+
+    # JAR-only download path: just the bare fat jar, no tarball, no JRE.
+    if [ -n "$JAR_ONLY" ]; then
+        if [ -n "$SNAPSHOT_VERSION" ]; then
+            JAR_URL="$DOWNLOAD_REPO/io/moderne/$DIST_ARTIFACT/$SNAPSHOT_VERSION/$DIST_ARTIFACT-$MOD_VERSION.jar"
+        else
+            JAR_URL="$DOWNLOAD_REPO/io/moderne/$DIST_ARTIFACT/$MOD_VERSION/$DIST_ARTIFACT-$MOD_VERSION.jar"
+        fi
+        echo "Downloading Moderne CLI $MOD_VERSION (jar-only)..." >&2
+        DOWNLOAD_TMP="$MODERNE_CLI_HOME/download-$$"
+        mkdir -p "$DOWNLOAD_TMP"
+        trap 'rm -rf "$DOWNLOAD_TMP" "$_LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
+        _DOWNLOAD_RC=0
+        http_download "$JAR_URL" "$DOWNLOAD_TMP/moderne-cli.jar" || _DOWNLOAD_RC=$?
+        if [ "$_DOWNLOAD_RC" -ne 0 ]; then
+            _STATUS="$(http_head_status "$JAR_URL")"
+            rm -rf "$DOWNLOAD_TMP"
+            if classify_cli_download_failure "$JAR_URL" "$_STATUS"; then
+                # Reset MOD_VERSION to the actually-installed version so the
+                # AOT-stamp section below doesn't rewrite version.txt with the
+                # failed target version.
+                [ -f "$VERSION_FILE" ] && MOD_VERSION="$(cat "$VERSION_FILE")"
+                release_install_lock
+                return 0
+            fi
+            release_install_lock
             exit 1
         fi
-        echo "  Checksum verified." >&2
+        mkdir -p "$DIST_DIR/lib"
+        # Atomic-ish replace via same-directory rename so concurrent readers
+        # never see a partial jar.
+        mv "$DOWNLOAD_TMP/moderne-cli.jar" "$DIST_DIR/lib/moderne-cli.jar.tmp"
+        mv "$DIST_DIR/lib/moderne-cli.jar.tmp" "$DIST_DIR/lib/moderne-cli.jar"
+        echo "$MOD_VERSION" > "$DIST_DIR/version.txt"
+        rm -rf "$DOWNLOAD_TMP"
+        echo "Moderne CLI $MOD_VERSION installed to $DIST_DIR (jar-only)" >&2
+        release_install_lock
+        return 0
     fi
 
-    # Atomic move — if another process finished first, discard our copy
-    if [[ -f "$cached" ]]; then
-        rm -f "$tmp_file"
+    # Construct download URL
+    if [ -n "$CUSTOM_URL" ]; then
+        # Expand ${version} and ${platform} template variables
+        DOWNLOAD_URL="$(echo "$CUSTOM_URL" | sed "s/\${version}/$MOD_VERSION/g" | sed "s/\${platform}/$PLATFORM/g")"
+    elif [ -n "$SNAPSHOT_VERSION" ]; then
+        DOWNLOAD_URL="$DOWNLOAD_REPO/io/moderne/$DIST_ARTIFACT/$SNAPSHOT_VERSION/$DIST_ARTIFACT-$MOD_VERSION.sh"
     else
-        mv "$tmp_file" "$cached"
-        chmod +x "$cached"
+        DOWNLOAD_URL="$DOWNLOAD_REPO/io/moderne/$DIST_ARTIFACT/$MOD_VERSION/$DIST_ARTIFACT-$MOD_VERSION.sh"
     fi
 
-    echo "$cached"
-}
+    echo "Downloading Moderne CLI $MOD_VERSION for $PLATFORM..." >&2
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-main() {
-    if [[ ! -f "$PROPERTIES_FILE" ]]; then
-        echo "Error: Cannot find $PROPERTIES_FILE" >&2
+    # Clean stale download dirs left by SIGKILL-ed runs (PID no longer alive).
+    # The install lock prevents live siblings from reaching this code.
+    for _STALE in "$MODERNE_CLI_HOME"/download-*; do
+        [ -d "$_STALE" ] || continue
+        _STALE_PID="${_STALE##*/download-}"
+        case "$_STALE_PID" in
+            ''|*[!0-9]*) rm -rf "$_STALE" ;;
+            *) kill -0 "$_STALE_PID" 2>/dev/null || rm -rf "$_STALE" ;;
+        esac
+    done
+
+    DOWNLOAD_TMP="$MODERNE_CLI_HOME/download-$$"
+    mkdir -p "$DOWNLOAD_TMP"
+    # Extend trap from acquire_install_lock to also clean the download dir
+    trap 'rm -rf "$DOWNLOAD_TMP" "$_LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
+    ARCHIVE="$DOWNLOAD_TMP/moderne-cli.sh"
+
+    _DOWNLOAD_RC=0
+    http_download "$DOWNLOAD_URL" "$ARCHIVE" || _DOWNLOAD_RC=$?
+    if [ "$_DOWNLOAD_RC" -ne 0 ]; then
+        _STATUS="$(http_head_status "$DOWNLOAD_URL")"
+        rm -rf "$DOWNLOAD_TMP"
+        if classify_cli_download_failure "$DOWNLOAD_URL" "$_STATUS"; then
+            # Reset MOD_VERSION to the actually-installed version so the
+            # AOT-stamp section below doesn't rewrite version.txt with the
+            # failed target version.
+            [ -f "$VERSION_FILE" ] && MOD_VERSION="$(cat "$VERSION_FILE")"
+            release_install_lock
+            return 0
+        fi
+        release_install_lock
         exit 1
     fi
 
-    local version
-    version=$(read_property "version" "RELEASE")
-    version="${MODERNE_WRAPPER_VERSION:-$version}"
+    # Verify checksum if specified
+    if [ -f "$PROPS_FILE" ]; then
+        EXPECTED_SHA="$(grep "^distributionSha256Sum=" "$PROPS_FILE" | cut -d= -f2-)"
+        if [ -n "$EXPECTED_SHA" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL_SHA="$(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
+            elif command -v shasum >/dev/null 2>&1; then
+                ACTUAL_SHA="$(shasum -a 256 "$ARCHIVE" | cut -d' ' -f1)"
+            fi
+            if [ -n "$ACTUAL_SHA" ] && [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "ERROR: SHA-256 checksum mismatch for downloaded distribution." >&2
+                echo "  Expected: $EXPECTED_SHA" >&2
+                echo "  Actual:   $ACTUAL_SHA" >&2
+                exit 1
+            fi
+        fi
+    fi
 
-    local base_url
-    base_url=$(read_property "distributionUrl" "https://repo1.maven.org/maven2/io/moderne")
-    base_url="${MODERNE_WRAPPER_DISTRIBUTION_URL:-$base_url}"
+    # Extract tgz payload from self-extracting .sh archive
+    mkdir -p "$DOWNLOAD_TMP/extracted"
+    ARCHIVE_LINE=$(awk '/^__ARCHIVE__$/{print NR + 1; exit 0;}' "$ARCHIVE")
+    tail -n+"$ARCHIVE_LINE" "$ARCHIVE" | tar xzf - -C "$DOWNLOAD_TMP/extracted"
 
-    local platform
-    platform=$(detect_platform)
+    # Remove old dated snapshot jars (e.g. moderne-cli-4.0.0-20260227.123456-42.jar)
+    for _JAR in "$DIST_DIR"/lib/moderne-cli-*-*.*-*.jar; do
+        [ -f "$_JAR" ] && rm -f "$_JAR"
+    done
 
-    version=$(resolve_version "$version" "$base_url" "$platform")
+    # Remove old JRE before copying (jlink creates read-only legal files)
+    if [ -d "$DOWNLOAD_TMP/extracted/jre" ]; then
+        rm -rf "$DIST_DIR/jre"
+    fi
 
-    local cli_path
-    cli_path=$(download_distribution "$base_url" "$platform" "$version")
+    # Remove properties from archive so we don't overwrite the user's
+    # version=RELEASE (or other dynamic setting) with a hard-coded version.
+    rm -f "$DOWNLOAD_TMP/extracted/moderne-wrapper.properties"
 
-    exec "$cli_path" "$@"
+    # Move extracted contents into dist
+    mkdir -p "$DIST_DIR"
+    cp -r "$DOWNLOAD_TMP/extracted/"* "$DIST_DIR/"
+    rm -rf "$DOWNLOAD_TMP"
+
+    # Stamp the installed version
+    echo "$MOD_VERSION" > "$DIST_DIR/version.txt"
+    echo "Moderne CLI $MOD_VERSION installed to $DIST_DIR" >&2
+
+    release_install_lock
 }
 
-main "$@"
+# --- Java detection ---
+
+detect_java_version() {
+    "$1" -version 2>&1 | head -1 | sed -E 's/.*"([0-9]+).*/\1/'
+}
+
+is_graalvm() {
+    "$1" -version 2>&1 | grep -qi "graalvm"
+}
+
+try_java() {
+    _CANDIDATE="$1"
+    # On macOS, JDKs live inside Contents/Home
+    if [ -x "$_CANDIDATE/Contents/Home/bin/java" ]; then
+        _CANDIDATE="$_CANDIDATE/Contents/Home"
+    fi
+    if [ -x "$_CANDIDATE/bin/java" ]; then
+        # Single invocation: check version and GraalVM in one subprocess
+        _VERSION_LINE="$("$_CANDIDATE/bin/java" -version 2>&1 | head -1)"
+        VER="$(echo "$_VERSION_LINE" | sed -E 's/.*"([0-9]+).*/\1/')"
+        if [ "$VER" -ge "$MIN_JAVA_VERSION" ] 2>/dev/null; then
+            if echo "$_VERSION_LINE" | grep -qi "graalvm"; then
+                return 1
+            fi
+            JAVA_CMD="$_CANDIDATE/bin/java"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Scan a directory of JDK installations, picking the newest that qualifies
+scan_jdk_dir() {
+    if [ -d "$1" ]; then
+        for _DIR in "$1"/*; do
+            try_java "$_DIR" && return 0
+        done
+    fi
+    return 1
+}
+
+find_java() {
+    # 1. MODERNE_JAVA_HOME (explicit override)
+    if [ -n "$MODERNE_JAVA_HOME" ]; then
+        if [ -x "$MODERNE_JAVA_HOME/bin/java" ]; then
+            JAVA_CMD="$MODERNE_JAVA_HOME/bin/java"
+            return 0
+        fi
+        echo "ERROR: MODERNE_JAVA_HOME is set to '$MODERNE_JAVA_HOME' but no java executable found there." >&2
+        exit 1
+    fi
+
+    # 2. JAVA_HOME
+    if [ -n "$JAVA_HOME" ]; then
+        try_java "$JAVA_HOME" && return 0
+    fi
+
+    # 3. java on PATH
+    if command -v java >/dev/null 2>&1; then
+        _PATH_VER_LINE="$(java -version 2>&1 | head -1)"
+        VER="$(echo "$_PATH_VER_LINE" | sed -E 's/.*"([0-9]+).*/\1/')"
+        if [ "$VER" -ge "$MIN_JAVA_VERSION" ] 2>/dev/null; then
+            if ! echo "$_PATH_VER_LINE" | grep -qi "graalvm"; then
+                JAVA_CMD="java"
+                return 0
+            fi
+        fi
+    fi
+
+    # 4. Bundled JRE (from platform distribution — known-good, no scanning needed)
+    if [ -x "$DIST_DIR/jre/bin/java" ]; then
+        JAVA_CMD="$DIST_DIR/jre/bin/java"
+        return 0
+    fi
+
+    # 5. Well-known JDK locations (mirrors JavaRuntime.installed() in mod)
+    HOME_DIR="${HOME:-$(eval echo ~)}"
+
+    # SDKMAN
+    scan_jdk_dir "$HOME_DIR/.sdkman/candidates/java" && return 0
+    scan_jdk_dir "/opt/homebrew/opt/sdkman-cli/libexec/candidates/java" && return 0
+
+    # macOS
+    scan_jdk_dir "/Library/Java/JavaVirtualMachines" && return 0
+    scan_jdk_dir "$HOME_DIR/Library/Java/JavaVirtualMachines" && return 0
+
+    # IntelliJ / Gradle toolchains
+    scan_jdk_dir "$HOME_DIR/.jdks" && return 0
+    scan_jdk_dir "$HOME_DIR/.gradle/jdks" && return 0
+
+    # Linux
+    scan_jdk_dir "/opt/java" && return 0
+    scan_jdk_dir "/usr/lib/jvm" && return 0
+
+    # 6. Auto-download from Adoptium (or custom jdkUrl)
+    download_jdk && return 0
+
+    echo "ERROR: No Java $MIN_JAVA_VERSION+ found." >&2
+    echo "Set JAVA_HOME or MODERNE_JAVA_HOME, or install Java $MIN_JAVA_VERSION+." >&2
+    exit 1
+}
+
+download_jdk() {
+    JDK_DIR="$DIST_DIR/jdk/$MIN_JAVA_VERSION"
+    if [ -x "$JDK_DIR/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/bin/java"
+        return 0
+    fi
+    # On macOS, JDKs live inside Contents/Home
+    if [ -x "$JDK_DIR/Contents/Home/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/Contents/Home/bin/java"
+        return 0
+    fi
+
+    JDK_URL="https://api.adoptium.net/v3/binary/latest/$MIN_JAVA_VERSION/ga/$(detect_os)/$(detect_arch)/jdk/hotspot/normal/eclipse"
+    if [ -f "$PROPS_FILE" ]; then
+        CUSTOM_JDK_URL="$(grep "^jdkUrl=" "$PROPS_FILE" | cut -d= -f2-)"
+        if [ -n "$CUSTOM_JDK_URL" ]; then
+            JDK_URL="$CUSTOM_JDK_URL"
+        fi
+    fi
+    if [ "$JDK_URL" = "skip" ]; then
+        return 1
+    fi
+
+    # Serialize JDK install across concurrent wrapper invocations
+    acquire_install_lock
+
+    # Re-check inside the lock: another process may have installed the JDK while we waited
+    if [ -x "$JDK_DIR/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/bin/java"
+        release_install_lock
+        return 0
+    fi
+    if [ -x "$JDK_DIR/Contents/Home/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/Contents/Home/bin/java"
+        release_install_lock
+        return 0
+    fi
+
+    echo "Downloading JDK $MIN_JAVA_VERSION..." >&2
+
+    # Clean stale JDK download dirs left by SIGKILL-ed runs (PID no longer alive)
+    for _STALE in "$DIST_DIR"/jdk/download-*; do
+        [ -d "$_STALE" ] || continue
+        _STALE_PID="${_STALE##*/download-}"
+        case "$_STALE_PID" in
+            ''|*[!0-9]*) rm -rf "$_STALE" ;;
+            *) kill -0 "$_STALE_PID" 2>/dev/null || rm -rf "$_STALE" ;;
+        esac
+    done
+
+    JDK_TMP="$DIST_DIR/jdk/download-$$"
+    mkdir -p "$JDK_TMP"
+    # Extend trap to also clean the JDK download dir
+    trap 'rm -rf "$JDK_TMP" "$_LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
+    ARCHIVE="$JDK_TMP/jdk-download.tar.gz"
+
+    http_download "$JDK_URL" "$ARCHIVE" || { rm -rf "$JDK_TMP"; release_install_lock; return 1; }
+
+    mkdir -p "$JDK_TMP/extracted"
+    tar xzf "$ARCHIVE" -C "$JDK_TMP/extracted"
+
+    # The archive typically contains a single top-level directory
+    EXTRACTED_DIR="$(ls -d "$JDK_TMP/extracted"/*/ 2>/dev/null | head -1)"
+    if [ -z "$EXTRACTED_DIR" ]; then
+        rm -rf "$JDK_TMP"
+        release_install_lock
+        return 1
+    fi
+
+    rm -rf "$JDK_DIR"
+    mkdir -p "$(dirname "$JDK_DIR")"
+    mv "$EXTRACTED_DIR" "$JDK_DIR"
+    rm -rf "$JDK_TMP"
+
+    if [ -x "$JDK_DIR/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/bin/java"
+    elif [ -x "$JDK_DIR/Contents/Home/bin/java" ]; then
+        JAVA_CMD="$JDK_DIR/Contents/Home/bin/java"
+    else
+        release_install_lock
+        return 1
+    fi
+    echo "JDK $MIN_JAVA_VERSION installed to $JDK_DIR" >&2
+    release_install_lock
+    return 0
+}
+
+# --- JAR detection ---
+
+find_jar() {
+    # 1. MODERNE_JAR environment variable
+    if [ -n "$MODERNE_JAR" ]; then
+        if [ -f "$MODERNE_JAR" ]; then
+            MOD_JAR="$MODERNE_JAR"
+            return 0
+        fi
+        echo "ERROR: MODERNE_JAR is set to '$MODERNE_JAR' but the file does not exist." >&2
+        exit 1
+    fi
+
+    # 2. Local Gradle build output (development) — picks whichever of devFatJar/fatJar was built last
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    BUILD_LIBS="$SCRIPT_DIR/mod/build/libs"
+    if [ -d "$BUILD_LIBS" ]; then
+        NEWEST_JAR="$(ls -t "$BUILD_LIBS"/mod-*-fat.jar 2>/dev/null | head -1)"
+        if [ -n "$NEWEST_JAR" ]; then
+            MOD_JAR="$NEWEST_JAR"
+            return 0
+        fi
+    fi
+
+    # 3. Maven Local (~/.m2) — prefer over distribution if newer
+    M2_BASE="$HOME/.m2/repository/io/moderne/moderne-cli"
+    M2_META="$M2_BASE/maven-metadata-local.xml"
+    if [ -f "$M2_META" ]; then
+        M2_VERSION="$(sed -n 's/.*<latest>\(.*\)<\/latest>.*/\1/p' "$M2_META")"
+        if [ -n "$M2_VERSION" ]; then
+            M2_JAR="$M2_BASE/$M2_VERSION/moderne-cli-$M2_VERSION.jar"
+            if [ -f "$M2_JAR" ]; then
+                DIST_JAR="$DIST_DIR/lib/moderne-cli.jar"
+                if [ ! -f "$DIST_JAR" ] || [ "$M2_JAR" -nt "$DIST_JAR" ]; then
+                    MOD_JAR="$M2_JAR"
+                    MOD_SOURCE="maven-local"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    # 4. Installed distribution
+    if [ -f "$DIST_DIR/lib/moderne-cli.jar" ]; then
+        MOD_JAR="$DIST_DIR/lib/moderne-cli.jar"
+        return 0
+    fi
+
+    echo "ERROR: Cannot find Moderne CLI JAR." >&2
+    echo "Set MODERNE_JAR or run modw to download the distribution." >&2
+    exit 1
+}
+
+# --- Main ---
+
+# Locate properties file: check project-local first, then in dist
+PROPS_FILE=""
+if [ -f "moderne/wrapper/moderne-wrapper.properties" ]; then
+    PROPS_FILE="moderne/wrapper/moderne-wrapper.properties"
+elif [ -f "$DIST_DIR/moderne-wrapper.properties" ]; then
+    PROPS_FILE="$DIST_DIR/moderne-wrapper.properties"
+fi
+
+resolve_auth
+ensure_distribution
+find_java
+find_jar
+
+# --- Extract nested JARs from fat JAR ---
+# Compute the extraction directory in-process (avoids a cold JVM start on every run).
+# ModerneLauncher uses:  $MODERNE_CLI_HOME/dist/classpath/<version>
+# Read from the JAR manifest (always matches the actual JAR, unlike version.txt
+# which tracks the distribution version and may differ for dev/maven-local builds).
+CLI_VERSION="$(unzip -p "$MOD_JAR" META-INF/MANIFEST.MF 2>/dev/null | sed -n 's/^Implementation-Version: *//p' | tr -d '\r')"
+if [ -z "$CLI_VERSION" ]; then
+    # Fallback: version.txt (correct for distribution installs)
+    if [ -f "$DIST_DIR/version.txt" ]; then
+        CLI_VERSION="$(cat "$DIST_DIR/version.txt")"
+    fi
+fi
+if [ -z "$CLI_VERSION" ]; then
+    CLI_VERSION="unknown"
+fi
+EXTRACTED_DIR="$DIST_DIR/classpath/$CLI_VERSION"
+
+# Only invoke the extraction JVM when the marker is missing or the JAR is newer
+if [ ! -f "$EXTRACTED_DIR/.extraction-complete" ] || [ "$MOD_JAR" -nt "$EXTRACTED_DIR/.extraction-complete" ]; then
+    "$JAVA_CMD" -Xlog:all=off -cp "$MOD_JAR" io.moderne.cli.launcher.ModerneLauncher --extract-only >/dev/null 2>&1 || true
+fi
+
+# Build the classpath from extracted JARs. The new extraction layout places JARs
+# under META-INF/lib/ and META-INF/cli/ subdirectories.
+# AOT_CP excludes the extraction directory itself (a non-empty directory entry
+# causes AOT cache creation to fail); the full CLASSPATH adds it so that
+# getResourceAsStream("META-INF/modmaven/manifest.txt") works at runtime.
+AOT_CP="$EXTRACTED_DIR/META-INF/cli/*:$EXTRACTED_DIR/META-INF/lib/*"
+CLASSPATH="$AOT_CP:$EXTRACTED_DIR"
+
+# --- Debug support ---
+DEBUG_PORT=""
+REMAINING_ARGS=""
+GENERATING_COMPLETION=""
+for arg in "$@"; do
+    case "$arg" in
+        --debug=*) DEBUG_PORT="${arg#--debug=}" ;;
+        --debug)   DEBUG_PORT="5005" ;;
+        *)         REMAINING_ARGS="$REMAINING_ARGS \"$arg\""
+                   if [ "$arg" = "generate-completion" ]; then
+                       GENERATING_COMPLETION="true"
+                   fi
+                   ;;
+    esac
+done
+
+# Detect invocation name (mod vs modw) for shell completion and help text
+SCRIPT_NAME="$(basename "$0")"
+# Prefer MODERNE_SCRIPT_PATH if set by a dev wrapper that delegates to us
+SCRIPT_PATH="${MODERNE_SCRIPT_PATH:-$(cd "$(dirname "$0")" && pwd)/$SCRIPT_NAME}"
+
+# --- GC selection ---
+# G1 unconditionally. Computed once and used both during AOT cache training
+# and at the final exec, so the cache's compressed-oops state matches what
+# the runtime JVM will use. Without this, a cache trained under one GC fails
+# to load when MODERNE_OPTS overrides to a different GC at runtime. A single
+# GC also keeps the cache stable across command types - the cache is keyed
+# on the training GC and would otherwise retrain on every toggle.
+#
+# If MODERNE_OPTS specifies a GC, defer to it: setting two GCs on one
+# command line is "last-wins with a warning" in HotSpot, and the warning
+# is noisy. Extract just the GC selectors from MODERNE_OPTS for training
+# (heap-size and pre-touch flags would slow training without affecting the
+# cache's GC compatibility).
+case "$MODERNE_OPTS" in
+    *UseG1GC*|*UseZGC*|*UseSerialGC*|*UseParallelGC*|*UseShenandoahGC*|*UseEpsilonGC*)
+        TRAINING_GC_FLAGS=""
+        for _f in $MODERNE_OPTS; do
+            case "$_f" in
+                -XX:+Use*GC|-XX:-Use*GC|-XX:+ZGenerational|-XX:-ZGenerational)
+                    TRAINING_GC_FLAGS="$TRAINING_GC_FLAGS $_f"
+                    ;;
+            esac
+        done
+        TRAINING_GC_FLAGS="${TRAINING_GC_FLAGS# }"
+        # Don't duplicate the GC selector in JVM_ARGS - MODERNE_OPTS will
+        # add it during the final exec.
+        JVM_ARGS_GC_FLAGS=""
+        ;;
+    *)
+        TRAINING_GC_FLAGS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ParallelRefProcEnabled"
+        JVM_ARGS_GC_FLAGS="$TRAINING_GC_FLAGS"
+        ;;
+esac
+
+# --- Project Leyden AOT cache ---
+
+AOT_DIR="$DIST_DIR/aot"
+AOT_CACHE="$AOT_DIR/mod.aot"
+AOT_CONFIG="$AOT_DIR/mod.aot.config"
+AOT_STAMP="$AOT_DIR/mod.aot.jar-stamp"
+AOT_JAR_PATH_STAMP="$AOT_DIR/mod.aot.jar-path"
+AOT_JAR_FINGERPRINT="$AOT_DIR/mod.aot.jar-fingerprint"
+AOT_JAVA_STAMP="$AOT_DIR/mod.aot.java-path"
+AOT_GC_STAMP="$AOT_DIR/mod.aot.gc-stamp"
+VERSION_FILE="$DIST_DIR/version.txt"
+
+# POSIX-portable jar fingerprint (modification time + size)
+jar_fingerprint() {
+    stat -c '%Y|%s' "$1" 2>/dev/null || stat -f '%m|%z' "$1" 2>/dev/null
+}
+
+# Invalidate AOT cache if the CLI version, jar path, or runtime GC has changed
+if [ -f "$AOT_CACHE" ]; then
+    STALE=""
+    if [ -f "$AOT_STAMP" ] && [ -f "$VERSION_FILE" ]; then
+        OLD_STAMP="$(cat "$AOT_STAMP")"
+        CURRENT_VERSION="$(cat "$VERSION_FILE")"
+        if [ "$CURRENT_VERSION" != "$OLD_STAMP" ]; then
+            STALE=true
+        fi
+    else
+        STALE=true
+    fi
+    if [ -f "$AOT_JAR_PATH_STAMP" ]; then
+        OLD_JAR_PATH="$(cat "$AOT_JAR_PATH_STAMP")"
+        if [ "$OLD_JAR_PATH" != "$MOD_JAR" ]; then
+            STALE=true
+        fi
+    else
+        STALE=true
+    fi
+    if [ -f "$AOT_JAR_FINGERPRINT" ]; then
+        OLD_FINGER="$(cat "$AOT_JAR_FINGERPRINT")"
+        CURRENT_FINGER="$(jar_fingerprint "$MOD_JAR")"
+        if [ "$OLD_FINGER" != "$CURRENT_FINGER" ]; then
+            STALE=true
+        fi
+    fi
+    if [ -f "$AOT_JAVA_STAMP" ]; then
+        OLD_JAVA_PATH="$(cat "$AOT_JAVA_STAMP")"
+        if [ "$OLD_JAVA_PATH" != "$JAVA_CMD" ]; then
+            STALE=true
+        fi
+    fi
+    # GC mismatch: a cache trained under one GC can't be loaded under
+    # another (compressed-oops state differs). The most common case is a
+    # caller setting MODERNE_OPTS to a non-default GC after the cache has
+    # already been trained under the default.
+    if [ -f "$AOT_GC_STAMP" ]; then
+        OLD_GC="$(cat "$AOT_GC_STAMP")"
+        if [ "$OLD_GC" != "$TRAINING_GC_FLAGS" ]; then
+            STALE=true
+        fi
+    else
+        STALE=true
+    fi
+    if [ "$MOD_JAR" -nt "$AOT_CACHE" ]; then
+        STALE=true
+    fi
+    if [ -n "$STALE" ]; then
+        rm -f "$AOT_CACHE" "$AOT_CONFIG"
+    fi
+fi
+
+# Stamp resolved CLI version, jar path, and GC for AOT invalidation
+if [ -n "$STALE" ] || [ ! -f "$AOT_CACHE" ]; then
+    mkdir -p "$AOT_DIR"
+    if [ -n "$MOD_VERSION" ]; then
+        echo "$MOD_VERSION" > "$AOT_STAMP"
+        echo "$MOD_VERSION" > "$VERSION_FILE"
+    fi
+    echo "$MOD_JAR" > "$AOT_JAR_PATH_STAMP"
+    jar_fingerprint "$MOD_JAR" > "$AOT_JAR_FINGERPRINT"
+    echo "$JAVA_CMD" > "$AOT_JAVA_STAMP"
+    echo "$TRAINING_GC_FLAGS" > "$AOT_GC_STAMP"
+fi
+
+# Create AOT cache if it doesn't exist (two-phase Leyden training), then generate
+# a shell completion script (fast, uses the warm AOT cache).
+# Phase 1 (record): runs --version to record class loading into a config file.
+# Phase 2 (create): assembles the AOT cache from the recording (no app execution).
+# AOT phases use AOT_CP (without the extraction directory) to avoid the
+# "directory is not empty" error during cache assembly. TRAINING_GC_FLAGS is
+# passed so the cache's compressed-oops state matches the runtime JVM.
+COMPLETION_FILE="$MODERNE_CLI_HOME/completion.bash"
+if [ ! -f "$AOT_CACHE" ]; then
+    mkdir -p "$AOT_DIR"
+    # shellcheck disable=SC2086
+    "$JAVA_CMD" -Xlog:all=off --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow $TRAINING_GC_FLAGS -Dmod.command.name="$SCRIPT_NAME" -Dmod.script.path="$SCRIPT_PATH" -XX:AOTMode=record -XX:AOTConfiguration="$AOT_CONFIG" -cp "$MOD_JAR:$AOT_CP" io.moderne.cli.commands.Mod --version >/dev/null 2>&1 || true
+    if [ -f "$AOT_CONFIG" ]; then
+        # shellcheck disable=SC2086
+        "$JAVA_CMD" -Xlog:all=off --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow $TRAINING_GC_FLAGS -XX:AOTMode=create -XX:AOTConfiguration="$AOT_CONFIG" -XX:AOTCache="$AOT_CACHE" -cp "$MOD_JAR:$AOT_CP" >/dev/null 2>&1 || true
+    fi
+    if [ -f "$AOT_CACHE" ]; then
+        # shellcheck disable=SC2086
+        "$JAVA_CMD" -Xlog:all=off --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow $TRAINING_GC_FLAGS -Dmod.command.name="$SCRIPT_NAME" -Dmod.script.path="$SCRIPT_PATH" -XX:AOTCache="$AOT_CACHE" -cp "$MOD_JAR:$CLASSPATH" io.moderne.cli.commands.Mod generate-completion > "$COMPLETION_FILE" 2>/dev/null || true
+    fi
+fi
+
+# Build JVM args.
+# generate-completion writes to stdout; disable JVM logging and AOT cache
+# to prevent JVM messages from corrupting the completion script output.
+JVM_ARGS="$JVM_ARGS_GC_FLAGS --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow"
+if [ -n "$GENERATING_COMPLETION" ]; then
+    JVM_ARGS="$JVM_ARGS -Xlog:all=off"
+else
+    JVM_ARGS="$JVM_ARGS -Xlog:all=warning:stderr"
+    if [ -f "$AOT_CACHE" ] && [ -z "$DEBUG_PORT" ]; then
+        # Verify the jar stamped in the cache still exists on disk
+        if [ -f "$AOT_JAR_PATH_STAMP" ]; then
+            STAMPED_JAR="$(cat "$AOT_JAR_PATH_STAMP")"
+            if [ -f "$STAMPED_JAR" ]; then
+                JVM_ARGS="$JVM_ARGS -XX:AOTCache=$AOT_CACHE"
+            else
+                rm -f "$AOT_CACHE"
+            fi
+        else
+            JVM_ARGS="$JVM_ARGS -XX:AOTCache=$AOT_CACHE"
+        fi
+    fi
+fi
+
+if [ -n "$DEBUG_PORT" ]; then
+    JVM_ARGS="$JVM_ARGS -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=localhost:$DEBUG_PORT"
+fi
+
+# shellcheck disable=SC2086
+MOD_SOURCE_ARG=""
+if [ -n "$MOD_SOURCE" ]; then
+    MOD_SOURCE_ARG="-Dmod.source=$MOD_SOURCE"
+fi
+
+# Translate persisted SSL/proxy config in moderne.yml into -D flags. The JVM needs
+# these in place at startup — agents like Pyroscope build their TrustManagers at
+# Agent_OnLoad premain time, before any application code (including SslConfiguration)
+# can call System.setProperty. SSL_ARGS goes BEFORE MODERNE_OPTS so a user's explicit
+# MODERNE_OPTS overrides config (env wins, last-D-wins on the JVM cmdline).
+# Note: modw's own curl/wget downloads above use OS-level trust, not these flags.
+# Helper uses SerialGC (fastest startup for a short-lived JVM) and no AOT cache
+# (the existing cache is trained for Mod, not the helper).
+resolve_jvm_args() {
+    "$JAVA_CMD" -Xlog:all=off \
+        --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow \
+        -XX:+UseSerialGC \
+        -cp "$MOD_JAR:$CLASSPATH" \
+        io.moderne.cli.config.JvmArgsResolver 2>/dev/null || true
+}
+SSL_ARGS="$(resolve_jvm_args)"
+
+eval exec "$JAVA_CMD" $JVM_ARGS $SSL_ARGS $MODERNE_OPTS -Dmod.command.name="$SCRIPT_NAME" -Dmod.script.path="$SCRIPT_PATH" -Dmod.jar="$MOD_JAR" $MOD_SOURCE_ARG -cp "$MOD_JAR:$CLASSPATH" io.moderne.cli.commands.Mod $REMAINING_ARGS

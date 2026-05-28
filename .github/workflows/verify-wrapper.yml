@@ -18,27 +18,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install wrapper (Linux/macOS)
+      - name: Initialize CLI (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          ./modw
+          ./init-mod
           echo "$HOME/.moderne/cli/bin" >> "$GITHUB_PATH"
 
-      - name: Install wrapper (Windows)
+      - name: Initialize CLI (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          call modw.cmd
-          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
+          call init-mod.cmd
+          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH"
 
       - name: Verify mod is on PATH
         run: mod --version
-
-      - name: Configure CLI (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: ./configure-mod.sh init
-
-      - name: Configure CLI (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: call configure-mod.cmd init
