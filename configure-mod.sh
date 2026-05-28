@@ -25,7 +25,7 @@ init() {
     mod config features no-maven-central
 
     echo "Configuring recipe artifacts from $ARTIFACTORY_MAVEN_URL..." >&2
-    mod config recipes artifacts artifactory edit "$ARTIFACTORY_MAVEN_URL"
+    mod config recipes artifacts artifactory add "$ARTIFACTORY_MAVEN_URL"
 
     echo -e "${GREEN}CLI environment configured successfully.${NC}" >&2
 }

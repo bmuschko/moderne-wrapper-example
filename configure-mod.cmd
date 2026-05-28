@@ -30,7 +30,7 @@ call mod config moderne edit "%MODERNE_TENANT%" --api="%MODERNE_TENANT%" || goto
 echo Disallowing Maven Central for artifact resolution... >&2
 call mod config features no-maven-central || goto :init_fail
 echo Configuring recipe artifacts from %ARTIFACTORY_MAVEN_URL%... >&2
-call mod config recipes artifacts artifactory edit "%ARTIFACTORY_MAVEN_URL%" || goto :init_fail
+call mod config recipes artifacts artifactory add "%ARTIFACTORY_MAVEN_URL%" || goto :init_fail
 echo CLI environment configured successfully. >&2
 exit /b 0
 
