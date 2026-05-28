@@ -29,13 +29,7 @@ jobs:
         shell: cmd
         run: |
           call init-mod.cmd
-          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH"
+          echo %USERPROFILE%\.moderne\cli\bin>> "%GITHUB_PATH%"
 
-      - name: Verify mod is on PATH (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: mod --version
-
-      - name: Verify mod is on PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
+      - name: Verify mod is on PATH
         run: mod --version
