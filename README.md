@@ -6,25 +6,21 @@ Developers and CI pipelines can run `./init-mod` (or `call init-mod.cmd` on Wind
 
 ## Quick Start
 
+Run `init-mod` to create the `mod` command, download the CLI, and configure the environment in one step.
+
 ### Linux / macOS
 
 ```bash
-# Set up mod command delegation and configure the CLI
 ./init-mod
-
-# Add mod to PATH for the current session
-export PATH="$HOME/.moderne/cli/bin:$PATH"
 ```
 
 ### Windows
 
 ```cmd
-rem Set up mod command delegation and configure the CLI
 call init-mod.cmd
-
-rem Add mod to PATH for the current session
-set PATH=%USERPROFILE%\.moderne\cli\bin;%PATH%
 ```
+
+After running, follow the on-screen instructions to add `mod` to your PATH for the current shell session. To make it permanent, add the printed `export PATH` (or `set PATH`) line to your shell profile.
 
 ## Repository Structure
 
@@ -54,8 +50,8 @@ The `modw` and `modw.cmd` scripts are copied from [Maven Central](https://repo1.
 The `init` subcommand runs the following configuration steps:
 
 1. Set the Moderne tenant URL (`mod config moderne edit`)
-2. Configure recipe artifacts from Artifactory (`mod config recipes artifacts artifactory edit`)
-3. Disallow Maven Central for artifact resolution (`mod config features no-maven-central`)
+2. Disallow Maven Central for artifact resolution (`mod config features no-maven-central`)
+3. Configure recipe artifacts from Artifactory (`mod config recipes artifacts artifactory edit`)
 
 The commands above are examples. Modify them based on your company's needs -- add, remove, or change commands as required. Edit the `MODERNE_TENANT` and `ARTIFACTORY_MAVEN_URL` variables at the top of each script to match your environment.
 
